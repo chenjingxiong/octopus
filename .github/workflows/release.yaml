@@ -23,11 +23,9 @@ jobs:
           ref: dev
 
       - name: Checkout axonhub (llm 依赖, 对应 go.mod 的 replace ../axonhub/llm)
-        uses: actions/checkout@v5
-        with:
-          repository: looplj/axonhub
-          ref: 72f121b68c44804f91f9f0f2c43f3c3bf5b91ca2
-          path: ../axonhub
+        run: |
+          cd "${GITHUB_WORKSPACE}/.."
+          git clone --depth 1 https://github.com/looplj/axonhub.git
 
       - name: Setup Go
         uses: actions/setup-go@v6

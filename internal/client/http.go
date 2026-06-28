@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
@@ -92,7 +93,19 @@ func clonedDefaultTransport() (*http.Transport, error) {
 	if !ok {
 		return nil, fmt.Errorf("default transport is not *http.Transport")
 	}
-	return transport.Clone(), nil
+	cloned := transport.Clone()
+	// 显式设置 TCP 拨号超时与 keep-alive，避免国内网络偶发 DNS/连接抖动时长时间卡死。
+	// http.DefaultTransport 的 Dialer.Timeout 为 0（无限），对上游 LLM 网关的长连接不友好。
+	cloned.DialContext = (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	// 等待上游响应头的最大时间，超时则快速失败让负载均衡切换下一个渠道。
+	cloned.ResponseHeaderTimeout = 60 * time.Second
+	cloned.TLSHandshakeTimeout = 10 * time.Second
+	cloned.ExpectContinueTimeout = 1 * time.Second
+	cloned.IdleConnTimeout = 90 * time.Second
+	return cloned, nil
 }
 
 func newHTTPClientNoProxy() (*http.Client, error) {

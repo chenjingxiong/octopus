@@ -110,9 +110,13 @@ func (r *relayRun) run() {
 			return
 		}
 		if written {
+			log.Warnf("relay attempt failed (already written, model=%s): %v", r.metrics.RequestModel, err)
 			r.metrics.Save(ctx, false, err, r.iter.Attempts())
 			return
 		}
+		// 记录每次渠道尝试失败的具体原因，便于排查“所有模型调用都失败”的根因（DNS/超时/上游断连等）。
+		log.Warnf("relay attempt failed (model=%s, attempt=%d/%d): %v",
+			r.metrics.RequestModel, r.iter.Index()+1, r.iter.Len(), err)
 		lastErr = err
 	}
 
@@ -142,6 +146,7 @@ func (r *relayRun) prepareAttempt() (*relayAttempt, error) {
 		return nil, nil
 	}
 	if r.iter.SkipCircuitBreak(channel.ID, usedKey.ID, channel.Name) {
+		log.Debugf("circuit breaker open, skipping channel %s key %d model %s", channel.Name, usedKey.ID, r.internalRequest.Model)
 		return nil, nil
 	}
 

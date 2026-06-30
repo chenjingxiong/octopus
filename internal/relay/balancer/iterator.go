@@ -119,17 +119,32 @@ func (it *Iterator) SkipCircuitBreak(channelID, channelKeyID int, channelName st
 	return true
 }
 
-// StartAttempt 开始一次真实转发尝试，返回 Span 用于记录结果
+// StartAttempt 开始一次真实转发尝试，返回 Span 用于记录结果。
+// 模型名取自当前候选（it.candidates[it.index]）。
 func (it *Iterator) StartAttempt(channelID, channelKeyID int, channelName string) *AttemptSpan {
+	modelName := ""
+	if it.index >= 0 && it.index < len(it.candidates) {
+		modelName = it.candidates[it.index].ModelName
+	}
+	return it.startAttempt(channelID, channelKeyID, channelName, modelName, it.IsSticky())
+}
+
+// StartAttemptWithModel 开始一次兜底转发尝试，模型名由调用方指定（不依赖 iter 当前位置）。
+// 用于组内候选耗尽后，在渠道的其他可用模型上兜底重试的场景。
+func (it *Iterator) StartAttemptWithModel(channelID, channelKeyID int, channelName, modelName string) *AttemptSpan {
+	return it.startAttempt(channelID, channelKeyID, channelName, modelName, false)
+}
+
+func (it *Iterator) startAttempt(channelID, channelKeyID int, channelName, modelName string, sticky bool) *AttemptSpan {
 	it.count++
 	return &AttemptSpan{
 		attempt: model.ChannelAttempt{
 			ChannelID:    channelID,
 			ChannelKeyID: channelKeyID,
 			ChannelName:  channelName,
-			ModelName:    it.candidates[it.index].ModelName,
+			ModelName:    modelName,
 			AttemptNum:   it.count,
-			Sticky:       it.IsSticky(),
+			Sticky:       sticky,
 		},
 		startTime: time.Now(),
 		iter:      it,

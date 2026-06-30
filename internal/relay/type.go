@@ -22,7 +22,8 @@ type relayRun struct {
 type relayAttempt struct {
 	*relayRun
 
-	outAdapter transformer.Outbound
-	channel    *dbmodel.Channel
-	usedKey    dbmodel.ChannelKey
+	outAdapter     transformer.Outbound
+	channel        *dbmodel.Channel
+	usedKey        dbmodel.ChannelKey
+	fallbackModel  string // 非空表示这是兜底尝试，StartAttempt 时用它替代 iter 当前模型名
 }

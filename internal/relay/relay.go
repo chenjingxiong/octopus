@@ -200,10 +200,11 @@ func (r *relayRun) buildFallbackAttempt(channel *dbmodel.Channel, usedKey dbmode
 	r.metrics.ActualModel = fallbackModel
 	r.metrics.ParamOverride = ""
 	return &relayAttempt{
-		relayRun:   r,
-		outAdapter: outAdapter,
-		channel:    channel,
-		usedKey:    usedKey,
+		relayRun:      r,
+		outAdapter:    outAdapter,
+		channel:       channel,
+		usedKey:       usedKey,
+		fallbackModel: fallbackModel,
 	}, nil
 }
 
@@ -302,7 +303,13 @@ func (r *relayRun) runFallback(ctx context.Context) error {
 
 // run 统一管理一次通道尝试的完整生命周期。
 func (ra *relayAttempt) run() (bool, error) {
-	span := ra.iter.StartAttempt(ra.channel.ID, ra.usedKey.ID, ra.channel.Name)
+	var span *balancer.AttemptSpan
+	if ra.fallbackModel != "" {
+		// 兜底场景：模型名不由 iter 当前位置决定，避免越界且记录正确的模型
+		span = ra.iter.StartAttemptWithModel(ra.channel.ID, ra.usedKey.ID, ra.channel.Name, ra.fallbackModel)
+	} else {
+		span = ra.iter.StartAttempt(ra.channel.ID, ra.usedKey.ID, ra.channel.Name)
+	}
 
 	upstreamStatusCode, fwdErr := ra.forward()
 	if fwdErr == nil && upstreamStatusCode == 0 {

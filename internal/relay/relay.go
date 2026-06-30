@@ -123,6 +123,18 @@ func (r *relayRun) run() {
 	if lastErr == nil {
 		lastErr = errors.New("all channels failed")
 	}
+
+	// 兜底：组内候选全部失败且尚未向客户端写入响应时，在“同组同渠道”上
+	// 用渠道真实支持的其他高能力模型（按上下文长度降序）重试，避免整组不可用。
+	if lastErr != nil && !r.c.Writer.Written() {
+		if fallbackErr := r.runFallback(ctx); fallbackErr == nil {
+			r.metrics.Save(ctx, true, nil, r.iter.Attempts())
+			return
+		} else {
+			lastErr = fallbackErr
+		}
+	}
+
 	r.metrics.Save(ctx, false, lastErr, r.iter.Attempts())
 	resp.Error(r.c, http.StatusBadGateway, lastErr.Error())
 }
@@ -170,6 +182,122 @@ func (r *relayRun) prepareAttempt() (*relayAttempt, error) {
 		channel:    channel,
 		usedKey:    usedKey,
 	}, nil
+}
+
+// buildFallbackAttempt 为兜底场景构造一次转发尝试。
+// 与 prepareAttempt 的区别：
+//   - 候选模型不来自 iter.Item，而是由调用方指定的 fallbackModel（渠道真实支持的模型）；
+//   - 不依赖 iter 的 Skip/SkipCircuitBreak（兜底阶段自行控制跳过与熔断检查）。
+//
+// channel 必须已校验为 enabled 且存在可用 key；调用方需在调用前完成这些检查。
+func (r *relayRun) buildFallbackAttempt(channel *dbmodel.Channel, usedKey dbmodel.ChannelKey, fallbackModel string) (*relayAttempt, error) {
+	outAdapter, err := newOutbound(channel.Type, r.internalRequest, channel.GetBaseUrl(), usedKey.ChannelKey)
+	if err != nil {
+		return nil, err
+	}
+
+	r.internalRequest.Model = fallbackModel
+	r.metrics.ActualModel = fallbackModel
+	r.metrics.ParamOverride = ""
+	return &relayAttempt{
+		relayRun:   r,
+		outAdapter: outAdapter,
+		channel:    channel,
+		usedKey:    usedKey,
+	}, nil
+}
+
+// runFallback 在组内候选全部失败后，于“同组同渠道”上用渠道真实支持的其他高能力模型兜底重试。
+// 仅在尚未向客户端写入响应时调用。成功返回 nil。
+func (r *relayRun) runFallback(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	// 收集本轮已尝试过的模型名（含组内已配置候选），用于兜底去重
+	attemptModelNames := make([]string, 0, len(r.iter.Attempts()))
+	for _, a := range r.iter.Attempts() {
+		attemptModelNames = append(attemptModelNames, a.ModelName)
+	}
+	groupItemModels := make([]string, 0, len(r.group.Items))
+	// 去重收集本组涉及的渠道，保证同渠道只查一次可用模型
+	channelSeen := make(map[int]struct{})
+	channelIDs := make([]int, 0, len(r.group.Items))
+	for _, item := range r.group.Items {
+		groupItemModels = append(groupItemModels, item.ModelName)
+		if _, ok := channelSeen[item.ChannelID]; !ok {
+			channelSeen[item.ChannelID] = struct{}{}
+			channelIDs = append(channelIDs, item.ChannelID)
+		}
+	}
+	usedModels := collectUsedModels(attemptModelNames, groupItemModels)
+
+	var lastErr error
+	for _, channelID := range channelIDs {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		channel, err := op.ChannelGet(channelID, ctx)
+		if err != nil || !channel.Enabled {
+			continue
+		}
+		usedKey := channel.GetChannelKey()
+		if usedKey.ChannelKey == "" {
+			continue
+		}
+
+		fallbackModels := selectFallbackModels(
+			usedModels, channel.ID, usedKey.ID, channelModelList(channel.Model)...,
+		)
+		if len(fallbackModels) == 0 {
+			continue
+		}
+
+		for _, fm := range fallbackModels {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			// 模型级熔断：跳过已熔断的 (channel, model)
+			if tripped, _ := balancer.IsTripped(channel.ID, usedKey.ID, fm); tripped {
+				continue
+			}
+
+			attempt, bErr := r.buildFallbackAttempt(channel, usedKey, fm)
+			if bErr != nil || attempt == nil {
+				continue
+			}
+			log.Infof("relay fallback (model=%s, channel=%s, fallback_model=%s): no group candidate succeeded, trying channel's strongest available model",
+				r.metrics.RequestModel, channel.Name, fm)
+
+			written, runErr := attempt.run()
+			if runErr == nil {
+				log.Infof("relay fallback succeeded (model=%s, channel=%s, fallback_model=%s)",
+					r.metrics.RequestModel, channel.Name, fm)
+				return nil
+			}
+			// 已写入响应（流式已开始）则不能再切换，直接返回
+			if written {
+				log.Warnf("relay fallback failed (already written, model=%s, fallback_model=%s): %v",
+					r.metrics.RequestModel, fm, runErr)
+				return runErr
+			}
+			log.Warnf("relay fallback failed (model=%s, channel=%s, fallback_model=%s): %v",
+				r.metrics.RequestModel, channel.Name, fm, runErr)
+			lastErr = runErr
+			usedModels[fm] = true
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = errors.New("fallback exhausted, no available model")
+	}
+	return lastErr
 }
 
 // run 统一管理一次通道尝试的完整生命周期。

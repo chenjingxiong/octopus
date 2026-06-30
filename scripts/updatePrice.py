@@ -136,14 +136,14 @@ def generate_claude_aliases(model_id: str) -> list[str]:
     return aliases
 
 
-def generate_entry(model_id: str, cost: dict) -> str:
+def generate_entry(model_id: str, cost: dict, context_length: int = 0) -> str:
     """生成单个模型的 Go map entry"""
     input_price = format_price(cost.get("input"))
     output_price = format_price(cost.get("output"))
     cache_read = format_price(cost.get("cache_read"))
     cache_write = format_price(cost.get("cache_write"))
-    
-    return f'\t"{model_id}": {{Input: {input_price}, Output: {output_price}, CacheRead: {cache_read}, CacheWrite: {cache_write}}},'
+
+    return f'\t"{model_id}": {{Input: {input_price}, Output: {output_price}, CacheRead: {cache_read}, CacheWrite: {cache_write}, ContextLength: {context_length}}},'
 
 
 def main():
@@ -164,27 +164,35 @@ def main():
         for model_data in models.values():
             model_id = model_data.get("id", "").lower()
             cost = model_data.get("cost", {})
-            
+
+            # 上下文窗口长度，作为模型能力的排序依据（fallback 选最强模型用）
+            context_length = 0
+            limit = model_data.get("limit")
+            if isinstance(limit, dict):
+                ctx = limit.get("context")
+                if isinstance(ctx, int):
+                    context_length = ctx
+
             if not model_id:
                 continue
-            
+
             # 添加原始模型
-            entries.append(generate_entry(model_id, cost))
+            entries.append(generate_entry(model_id, cost, context_length))
             provider_count += 1
-            
+
             # 收集所有别名
             aliases = []
-            
+
             # 1. Claude 模型自动生成别名
             aliases.extend(generate_claude_aliases(model_id))
-            
+
             # 2. 静态别名映射
             if model_id in MODEL_ALIASES:
                 aliases.extend(MODEL_ALIASES[model_id])
-            
-            # 添加别名 (去重)
+
+            # 添加别名 (去重)，别名继承原模型的能力（含 context_length）
             for alias in set(aliases):
-                entries.append(generate_entry(alias.lower(), cost))
+                entries.append(generate_entry(alias.lower(), cost, context_length))
                 provider_count += 1
             
         print(f"  {provider}: {provider_count} models")

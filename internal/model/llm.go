@@ -1,10 +1,11 @@
 package model
 
 type LLMPrice struct {
-	Input      float64 `json:"input"`
-	Output     float64 `json:"output"`
-	CacheRead  float64 `json:"cache_read"`
-	CacheWrite float64 `json:"cache_write"`
+	Input         float64 `json:"input"`
+	Output        float64 `json:"output"`
+	CacheRead     float64 `json:"cache_read"`
+	CacheWrite    float64 `json:"cache_write"`
+	ContextLength int     `json:"context_length"`
 }
 
 type LLMInfo struct {

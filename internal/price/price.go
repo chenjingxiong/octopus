@@ -57,8 +57,11 @@ func UpdateLLMPrice(ctx context.Context) error {
 	}
 	var rawPrice map[string]struct {
 		Models map[string]struct {
-			ID   string         `json:"id"`
-			Cost model.LLMPrice `json:"cost"`
+			ID    string         `json:"id"`
+			Cost  model.LLMPrice `json:"cost"`
+			Limit struct {
+				Context int `json:"context"`
+			} `json:"limit"`
 		} `json:"models"`
 	}
 	body, err := io.ReadAll(resp.Body)
@@ -72,6 +75,8 @@ func UpdateLLMPrice(ctx context.Context) error {
 	for _, provider := range Provider {
 		for _, model := range rawPrice[provider].Models {
 			model.ID = strings.ToLower(model.ID)
+			// 把上下文长度合并进 LLMPrice，作为模型能力排序依据（fallback 选最强模型用）
+			model.Cost.ContextLength = model.Limit.Context
 			llmPrice[model.ID] = model.Cost
 		}
 	}
